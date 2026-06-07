@@ -8,7 +8,7 @@
  *
  * Features:
  * - Multiple invite codes (one per line in config)
- * - Session-based auth (enter once, remember until session expires)
+ * - Session-based auth with signed cookie fallback (enter once, remember until expiry)
  * - Access log (JSON) with date, IP, user agent, invite code used
  * - Superuser always bypasses
  * - Configurable allowed pages (e.g. assets, API endpoints)
@@ -29,7 +29,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		return [
 			'title'     => 'Invite Access',
 			'summary'   => 'Restricts site access to visitors with a valid invite code. Designed for staging environments with multiple teams.',
-			'version'   => 101,
+			'version'   => 102,
 			'autoload'  => true,
 			'singular'  => true,
 			'permanent' => false,
@@ -155,14 +155,17 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 
 		foreach ($codes as $code => $label) {
 			if (hash_equals($code, $entered)) {
+				$expires = time() + ((int) $this->sessionHours * 3600);
 				$session->set('invite_access_code',    $code);
-				$session->set('invite_access_expires', time() + ((int) $this->sessionHours * 3600));
+				$session->set('invite_access_expires', $expires);
+				$this->setAccessCookie($code, $expires);
+				$this->clearErrorCookie();
 
 				$this->writeLog($code, $label, true, $requestUrl);
 
 				// PRG — redirect back to the same URL (minus query string)
 				$redirectTo = strtok($requestUrl, '?') ?: '/';
-				$session->redirect($redirectTo, false);
+				$this->redirect($redirectTo);
 				exit;
 			}
 		}
@@ -170,9 +173,10 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		// Invalid
 		$this->writeLog($entered, '', false, $requestUrl);
 		$session->set('invite_access_error', 1);
+		$this->setErrorCookie();
 
 		$redirectTo = strtok($requestUrl, '?') ?: '/';
-		$session->redirect($redirectTo, false);
+		$this->redirect($redirectTo);
 		exit;
 	}
 
@@ -186,16 +190,135 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		$code    = (string) $session->get('invite_access_code');
 		$expires = (int)    $session->get('invite_access_expires');
 
-		if (!$code || !$expires) return false;
+		if (!$code || !$expires) return $this->hasValidAccessCookie();
 
 		if (time() > $expires) {
 			$session->remove('invite_access_code');
 			$session->remove('invite_access_expires');
+			return $this->hasValidAccessCookie();
+		}
+
+		$codes = $this->parseCodes();
+		if (isset($codes[$code])) return true;
+
+		$session->remove('invite_access_code');
+		$session->remove('invite_access_expires');
+		return $this->hasValidAccessCookie();
+	}
+
+	protected function hasValidAccessCookie() {
+		$cookie = (string) ($_COOKIE[$this->getAccessCookieName()] ?? '');
+		if (!$cookie) return false;
+
+		$data = $this->decodeSignedCookie($cookie);
+		if (!$data) {
+			$this->clearAccessCookie();
+			return false;
+		}
+
+		$code    = (string) ($data['code'] ?? '');
+		$expires = (int)    ($data['expires'] ?? 0);
+
+		if (!$code || !$expires || time() > $expires) {
+			$this->clearAccessCookie();
 			return false;
 		}
 
 		$codes = $this->parseCodes();
-		return isset($codes[$code]);
+		if (!isset($codes[$code])) {
+			$this->clearAccessCookie();
+			return false;
+		}
+
+		return true;
+	}
+
+	protected function setAccessCookie($code, $expires) {
+		$value = $this->encodeSignedCookie([
+			'code'    => (string) $code,
+			'expires' => (int) $expires,
+		]);
+
+		$this->setCookie($this->getAccessCookieName(), $value, (int) $expires);
+		$_COOKIE[$this->getAccessCookieName()] = $value;
+	}
+
+	protected function clearAccessCookie() {
+		$this->setCookie($this->getAccessCookieName(), '', time() - 3600);
+		unset($_COOKIE[$this->getAccessCookieName()]);
+	}
+
+	protected function setErrorCookie() {
+		$this->setCookie($this->getErrorCookieName(), '1', time() + 300);
+		$_COOKIE[$this->getErrorCookieName()] = '1';
+	}
+
+	protected function clearErrorCookie() {
+		$this->setCookie($this->getErrorCookieName(), '', time() - 3600);
+		unset($_COOKIE[$this->getErrorCookieName()]);
+	}
+
+	protected function encodeSignedCookie(array $data) {
+		$payload = $this->base64UrlEncode(json_encode($data));
+		$signature = hash_hmac('sha256', $payload, $this->getCookieSecret());
+
+		return $payload . '.' . $signature;
+	}
+
+	protected function decodeSignedCookie($value) {
+		$parts = explode('.', (string) $value, 2);
+		if (count($parts) !== 2) return null;
+
+		[$payload, $signature] = $parts;
+		$expected = hash_hmac('sha256', $payload, $this->getCookieSecret());
+		if (!hash_equals($expected, $signature)) return null;
+
+		$base64 = strtr($payload, '-_', '+/');
+		$base64 .= str_repeat('=', (4 - strlen($base64) % 4) % 4);
+		$json = base64_decode($base64, true);
+		if ($json === false) return null;
+
+		$data = json_decode($json, true);
+		return is_array($data) ? $data : null;
+	}
+
+	protected function base64UrlEncode($value) {
+		return rtrim(strtr(base64_encode((string) $value), '+/', '-_'), '=');
+	}
+
+	protected function getCookieSecret() {
+		$config = $this->wire('config');
+		$salt = (string) ($config->userAuthSalt ?: $config->sessionName ?: __FILE__);
+
+		return $salt . '|InviteAccess';
+	}
+
+	protected function getAccessCookieName() {
+		return 'invite_access';
+	}
+
+	protected function getErrorCookieName() {
+		return 'invite_access_error';
+	}
+
+	protected function setCookie($name, $value, $expires) {
+		if (headers_sent()) return;
+
+		$options = [
+			'expires'  => (int) $expires,
+			'path'     => '/',
+			'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+			'httponly' => true,
+			'samesite' => 'Lax',
+		];
+
+		setcookie($name, $value, $options);
+	}
+
+	protected function redirect($url) {
+		if (!headers_sent()) {
+			header('Location: ' . $url, true, 303);
+		}
 	}
 
 	/*
@@ -279,8 +402,9 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	 */
 	protected function renderInviteForm() {
 		$session  = $this->wire('session');
-		$hasError = (bool) $session->get('invite_access_error');
+		$hasError = (bool) $session->get('invite_access_error') || (bool) ($_COOKIE[$this->getErrorCookieName()] ?? false);
 		if ($hasError) $session->remove('invite_access_error');
+		if ($hasError) $this->clearErrorCookie();
 
 		$title   = htmlspecialchars((string) $this->pageTitle   ?: 'Access Required');
 		$message = htmlspecialchars((string) $this->pageMessage ?: 'Please enter your invite code to continue.');

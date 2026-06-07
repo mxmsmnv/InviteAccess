@@ -4,6 +4,14 @@ All notable changes to InviteAccess are documented here.
 
 ---
 
+## [1.0.2] — 2026-06-07
+
+### Fixed
+- Added a signed HTTP-only fallback cookie so valid invite access persists when ProcessWire guest sessions are disabled with `$config->sessionAllow`.
+- Invalid invite-code errors now survive the post/redirect/get flow even when guest session storage is unavailable.
+
+---
+
 ## [1.0.1] — 2026-02-27
 
 Initial public release.
