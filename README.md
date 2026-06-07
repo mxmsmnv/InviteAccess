@@ -7,7 +7,7 @@ Restricts site access to visitors with a valid invite code. Designed for staging
 ## Features
 
 - Multiple invite codes — one per line, with optional human-readable labels
-- Session-based auth — visitors enter the code once, stay in for a configurable duration
+- Session-based auth with signed cookie fallback — visitors enter the code once, stay in for a configurable duration
 - Access log — JSON log with timestamp, IP, user agent, URL and code label for every attempt
 - Light / Dark / Auto theme on the access page — preference saved in localStorage
 - Superuser always bypasses — logged-in ProcessWire users are never blocked
@@ -91,13 +91,14 @@ Failed attempts log `"success": false` and redact the submitted value to `(inval
 
 The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. This ensures the gate fires reliably on all frontend URLs without interfering with the admin panel.
 
-On a valid code submission, the module stores the code and an expiry timestamp in the ProcessWire session. Subsequent requests validate against the session without touching the database. If a code is removed from the config, any active session using that code is immediately invalidated.
+On a valid code submission, the module stores the code and an expiry timestamp in the ProcessWire session and in a signed HTTP-only fallback cookie. The fallback keeps access working on sites that disable guest sessions with `$config->sessionAllow`. Subsequent requests validate that stored code without touching the database. If a code is removed from the config, any active session or fallback cookie using that code is immediately invalidated.
 
 ---
 
 ## Security Notes
 
 - Codes are compared using `hash_equals()` to prevent timing attacks
+- Fallback access cookies are signed with HMAC and marked HTTP-only
 - CSRF token is included in the access form
 - IP detection respects Cloudflare (`CF-Connecting-IP`) and proxy headers (`X-Forwarded-For`)
 - The module is intended for staging environments, not as a substitute for HTTP authentication on sensitive production data
