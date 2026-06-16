@@ -14,7 +14,7 @@
  * - Configurable allowed pages (e.g. assets, API endpoints)
  * - Optional per-code labels (e.g. "agency-team|Agency Design Team")
  *
- * @author Maxim Alex <maxim@smnv.org>
+ * @author Maxim Semenov <maxim@smnv.org> (smnv.org)
  * @license MIT
  */
 

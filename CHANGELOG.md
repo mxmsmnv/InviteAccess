@@ -37,4 +37,4 @@ Initial public release.
 
 ---
 
-*Maintained by [Maxim Alex](https://smnv.org) · [github.com/mxmsmnv/InviteAccess](https://github.com/mxmsmnv/InviteAccess)*
+*Maintained by [Maxim Semenov](https://smnv.org) · [github.com/mxmsmnv/InviteAccess](https://github.com/mxmsmnv/InviteAccess)*

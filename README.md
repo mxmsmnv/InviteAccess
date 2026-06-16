@@ -4,6 +4,10 @@ Restricts site access to visitors with a valid invite code. Designed for staging
 
 ---
 
+**Author:** Maxim Semenov  
+**Website:** [smnv.org](https://smnv.org)  
+**Email:** [maxim@smnv.org](mailto:maxim@smnv.org)
+
 If this project helps your work, consider supporting future development: [GitHub Sponsors](https://github.com/sponsors/mxmsmnv) or [smnv.org/sponsor](https://smnv.org/sponsor/).  
 
 ## Features
@@ -109,7 +113,7 @@ On a valid code submission, the module stores the code and an expiry timestamp i
 
 ## Author
 
-**Maxim Alex**
+**Maxim Semenov**
 [smnv.org](https://smnv.org) · [GitHub @mxmsmnv](https://github.com/mxmsmnv)
 
 ---
