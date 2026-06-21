@@ -2,6 +2,8 @@
 
 Restricts site access to visitors with a valid invite code. Designed for staging environments with multiple teams.
 
+![InviteAccess](assets/InviteAccess.png)
+
 ---
 
 **Author:** Maxim Semenov  
