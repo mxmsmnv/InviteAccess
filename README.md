@@ -18,8 +18,8 @@ If this project helps your work, consider supporting future development: [GitHub
 - Session-based auth with signed cookie fallback — visitors enter the code once, stay in for a configurable duration
 - Access log — JSON log with timestamp, IP, user agent, URL and code label for every attempt
 - Light / Dark / Auto theme on the access page — preference saved in localStorage
-- Superuser always bypasses — logged-in ProcessWire users are never blocked
-- Allowed pages — specific pages can be made publicly accessible even while the site is locked
+- Logged-in ProcessWire users and CLI bootstraps always bypass the gate
+- Allowed pages — selected pages and descendants bypass the gate, with complete path-segment matching
 - Clean, minimal UI — ApfelGrotezk font, processwire.com-inspired design, Bootstrap Icons
 - Accent color presets — red, blue, green or black, configurable per-install
 
@@ -27,12 +27,7 @@ If this project helps your work, consider supporting future development: [GitHub
 
 ## Installation
 
-1. Download or clone the repository into your `site/modules/` directory:
-
-```bash
-cd site/modules
-git clone https://github.com/mxmsmnv/InviteAccess.git
-```
+1. Download the module and place `InviteAccess.module.php` and `assets/` in `site/modules/InviteAccess/`. Keep a development Git checkout outside the public document root; do not copy `.git/` or `tests/` into the site. Repository archives exclude the test suite.
 
 2. In the ProcessWire admin, go to **Modules → Refresh**, then find **InviteAccess** and click **Install**.
 
@@ -91,13 +86,15 @@ When logging is enabled, every access attempt is written to a JSON file (newest 
 }
 ```
 
-Failed attempts log `"success": false` and redact the submitted value to `(invalid: ...)`. The log is capped at 1000 entries. The last 50 entries are also displayed directly in the module's admin config page.
+Failed attempts log `"success": false` and include up to 20 characters of the submitted value as `(invalid: ...)`. Successful attempts include the invite code. Treat this file as sensitive; labels do not redact codes. Writes are locked and atomically replaced; corrupt JSON is preserved for administrator review. The log is capped at 1000 entries. The last 50 entries are also displayed directly in the module's admin config page.
 
 ---
 
+The log directory must deny HTTP access (including on Nginx, where `.htaccess` does not apply), or set an absolute log path outside the public document root. The PHP worker needs write access to that directory to create the log, lock file and temporary replacement file. New replacement files are owner-readable/writable only. Removing the module does not delete these files.
+
 ## How It Works
 
-The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. This ensures the gate fires reliably on all frontend URLs without interfering with the admin panel.
+The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. CLI requests return immediately. Admin and allowed-page exceptions require a complete path-segment match; ambiguous paths do not qualify for an exception.
 
 On a valid code submission, the module stores the code and an expiry timestamp in the ProcessWire session and in a signed HTTP-only fallback cookie. The fallback keeps access working on sites that disable guest sessions with `$config->sessionAllow`. Subsequent requests validate that stored code without touching the database. If a code is removed from the config, any active session or fallback cookie using that code is immediately invalidated.
 
@@ -106,12 +103,29 @@ On a valid code submission, the module stores the code and an expiry timestamp i
 ## Security Notes
 
 - Codes are compared using `hash_equals()` to prevent timing attacks
-- Fallback access cookies are signed with HMAC and marked HTTP-only
-- CSRF token is included in the access form
-- IP detection respects Cloudflare (`CF-Connecting-IP`) and proxy headers (`X-Forwarded-For`)
-- The module is intended for staging environments, not as a substitute for HTTP authentication on sensitive production data
+- Fallback access cookies are signed with HMAC using ProcessWire `userAuthSalt` and marked HTTP-only. Without this secret, signing and verification fail closed. Signed access cookies are not encrypted.
+- Every invite submission validates a signed, expiring double-submit CSRF token against an HTTP-only cookie, including when guest sessions are disabled. Reload forms opened before upgrading to 1.0.3.
+- Log IP addresses come from `REMOTE_ADDR`. Configure trusted proxy handling at the web-server boundary; client-supplied forwarded headers are ignored.
+- Use private, unpredictable codes; example codes shown in this document are public. New installations have no pre-filled codes; upgrades preserve configured codes.
+- Gate and redirect responses are not cacheable. Keep reverse proxies and full-page caches from serving protected content before PHP runs.
+- Allowed pages are stored as local database IDs. Reselect and verify them after importing configuration into a different database. The homepage does not exempt the entire site.
+- Direct static files are not intercepted by the PHP hook. Protect private files at the web-server boundary.
+- The gate still loads fonts and icons from jsDelivr; this contacts a third party before authentication.
+- The module is intended for staging environments, not as a substitute for HTTP authentication on sensitive production data. It does not provide rate limiting; enforce that at the server boundary when needed.
 
 ---
+
+## Validation
+
+Run from a development checkout with PHP 7.4+ and Python 3:
+
+```sh
+php -l InviteAccess.module.php
+php tests/regression.php
+python3 tests/http_regression.py
+```
+
+The regression tests use isolated ProcessWire API doubles and a temporary local PHP HTTP server. They cover CLI, URL exceptions, same-origin redirects, CSRF, cookies, log escaping, concurrent writes and guest-session modes. They do not replace verification on a disposable copy of the consuming ProcessWire site. Do not deploy `tests/` or development documentation into a public site directory.
 
 ## Author
 
