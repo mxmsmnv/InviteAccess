@@ -10,7 +10,7 @@
  * - Multiple invite codes (one per line in config)
  * - Session-based auth with signed cookie fallback (enter once, remember until expiry)
  * - Access log (JSON) with date, IP, user agent, invite code used
- * - Superuser always bypasses
+ * - All logged-in ProcessWire users bypass the gate
  * - Configurable allowed pages (e.g. assets, API endpoints)
  * - Optional per-code labels (e.g. "agency-team|Agency Design Team")
  *
@@ -29,7 +29,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		return [
 			'title'     => 'Invite Access',
 			'summary'   => 'Restricts site access to visitors with a valid invite code. Designed for staging environments with multiple teams.',
-			'version'   => 102,
+			'version'   => 103,
 			'autoload'  => true,
 			'singular'  => true,
 			'permanent' => false,
@@ -45,7 +45,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	public static function getDefaultData() {
 		return [
 			'enabled'        => 0,
-			'inviteCodes'    => "SUMMER2025|Summer Campaign\nAGENCY-PREVIEW|Agency Team\nCLIENT-ACCESS|Client Preview",
+			'inviteCodes'    => '',
 			'pageTitle'      => 'Access Required',
 			'pageMessage'    => 'Please enter your invite code to continue.',
 			'errorMessage'   => 'Invalid invite code. Please try again.',
@@ -82,6 +82,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	 * ─────────────────────────────────────────────
 	 */
 	public function checkAccess(HookEvent $event) {
+		// Command-line bootstraps are not HTTP requests.
+		if (PHP_SAPI === 'cli' || $this->wire('config')->cli) return;
 		if (!$this->enabled) return;
 
 		$user = $this->wire('user');
@@ -91,10 +93,11 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 
 		// Current request URL (before any PW routing)
 		$requestUrl = (string) ($_SERVER['REQUEST_URI'] ?? '/');
-		$adminUrl   = rtrim((string) $this->wire('config')->urls->admin, '/');
+		$requestPath = $this->normalizeRequestPath($requestUrl);
+		$adminUrl = (string) $this->wire('config')->urls->admin;
 
 		// Skip PW admin
-		if ($adminUrl && strpos($requestUrl, $adminUrl) === 0) return;
+		if ($this->pathMatches($requestPath, $adminUrl)) return;
 
 		// Skip explicitly allowed pages
 		if (!empty($this->allowedPages) && is_array($this->allowedPages)) {
@@ -103,8 +106,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 				if (!$pid) continue;
 				$p = $this->wire('pages')->get($pid);
 				if ($p && $p->id) {
-					$pUrl = rtrim((string) $p->url, '/');
-					if ($pUrl && strpos($requestUrl, $pUrl) === 0) return;
+					$pUrl = (string) $p->url;
+					if ($this->pathMatches($requestPath, $pUrl)) return;
 				}
 			}
 		}
@@ -113,8 +116,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		if ($this->hasValidSession()) return;
 
 		// Handle form submission
-		$postedCode = (string) $this->wire('input')->post('invite_code');
-		if ($postedCode !== '') {
+		$postedCode = $this->wire('input')->post('invite_code');
+		if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_string($postedCode) && $postedCode !== '') {
 			$this->handleFormSubmit($postedCode, $requestUrl);
 			// always exits inside
 		}
@@ -137,6 +140,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		if (!headers_sent()) {
 			http_response_code(200);
 			header('Content-Type: text/html; charset=utf-8');
+			header('Cache-Control: no-store, private');
+			header('Referrer-Policy: no-referrer');
 		}
 
 		echo $this->renderInviteForm();
@@ -150,12 +155,17 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	 */
 	protected function handleFormSubmit($entered, $requestUrl) {
 		$session = $this->wire('session');
+		if (!$this->hasValidFormToken()) {
+			$session->set('invite_access_error', 1);
+			$this->blockWithForm();
+			return;
+		}
 		$entered = trim($entered);
 		$codes   = $this->parseCodes();
 
 		foreach ($codes as $code => $label) {
-			if (hash_equals($code, $entered)) {
-				$expires = time() + ((int) $this->sessionHours * 3600);
+			if (hash_equals((string) $code, $entered)) {
+				$expires = time() + (max(1, (int) $this->sessionHours) * 3600);
 				$session->set('invite_access_code',    $code);
 				$session->set('invite_access_expires', $expires);
 				$this->setAccessCookie($code, $expires);
@@ -164,7 +174,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 				$this->writeLog($code, $label, true, $requestUrl);
 
 				// PRG — redirect back to the same URL (minus query string)
-				$redirectTo = strtok($requestUrl, '?') ?: '/';
+				$redirectTo = $this->getRedirectPath($requestUrl);
 				$this->redirect($redirectTo);
 				exit;
 			}
@@ -175,7 +185,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		$session->set('invite_access_error', 1);
 		$this->setErrorCookie();
 
-		$redirectTo = strtok($requestUrl, '?') ?: '/';
+		$redirectTo = $this->getRedirectPath($requestUrl);
 		$this->redirect($redirectTo);
 		exit;
 	}
@@ -207,8 +217,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	}
 
 	protected function hasValidAccessCookie() {
-		$cookie = (string) ($_COOKIE[$this->getAccessCookieName()] ?? '');
-		if (!$cookie) return false;
+		$cookie = $_COOKIE[$this->getAccessCookieName()] ?? '';
+		if (!is_string($cookie) || $cookie === '') return false;
 
 		$data = $this->decodeSignedCookie($cookie);
 		if (!$data) {
@@ -259,18 +269,22 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	}
 
 	protected function encodeSignedCookie(array $data) {
+		$secret = $this->getCookieSecret();
+		if ($secret === '') return '';
 		$payload = $this->base64UrlEncode(json_encode($data));
-		$signature = hash_hmac('sha256', $payload, $this->getCookieSecret());
+		$signature = hash_hmac('sha256', $payload, $secret);
 
 		return $payload . '.' . $signature;
 	}
 
 	protected function decodeSignedCookie($value) {
-		$parts = explode('.', (string) $value, 2);
+		$secret = $this->getCookieSecret();
+		if ($secret === '' || !is_string($value) || strlen($value) > 8192) return null;
+		$parts = explode('.', $value, 2);
 		if (count($parts) !== 2) return null;
 
 		[$payload, $signature] = $parts;
-		$expected = hash_hmac('sha256', $payload, $this->getCookieSecret());
+		$expected = hash_hmac('sha256', $payload, $secret);
 		if (!hash_equals($expected, $signature)) return null;
 
 		$base64 = strtr($payload, '-_', '+/');
@@ -288,9 +302,10 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 
 	protected function getCookieSecret() {
 		$config = $this->wire('config');
-		$salt = (string) ($config->userAuthSalt ?: $config->sessionName ?: __FILE__);
+		$salt = (string) $config->userAuthSalt;
 
-		return $salt . '|InviteAccess';
+		// Never sign a credential with a predictable session name or file path.
+		return $salt !== '' ? $salt . '|InviteAccess' : '';
 	}
 
 	protected function getAccessCookieName() {
@@ -306,8 +321,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 
 		$options = [
 			'expires'  => (int) $expires,
-			'path'     => '/',
-			'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+			'path'     => (string) $this->wire('config')->urls->root ?: '/',
+			'secure'   => (bool) $this->wire('config')->https || (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
 			'httponly' => true,
 			'samesite' => 'Lax',
 		];
@@ -317,8 +332,65 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 
 	protected function redirect($url) {
 		if (!headers_sent()) {
-			header('Location: ' . $url, true, 303);
+			header('Cache-Control: no-store, private');
+			header('Location: ' . $this->getRedirectPath($url), true, 303);
 		}
+	}
+
+	/** Reject ambiguous paths rather than guessing how the web server will route them. */
+	protected function normalizeRequestPath($url) {
+		if (!is_string($url) || strlen($url) > 8192) return null;
+		$path = explode('?', $url, 2)[0];
+		if (preg_match('/%(?![0-9a-f]{2})/i', $path)) return null;
+		$path = rawurldecode($path);
+		if ($path === '' || $path[0] !== '/' || strpos($path, '//') !== false) return null;
+		// Reject controls, backslashes, fragments, and nested percent encodings.
+		if (preg_match('/[\x00-\x20\x7f\\\\#%?]/', $path)) return null;
+		foreach (explode('/', $path) as $segment) {
+			if ($segment === '.' || $segment === '..') return null;
+		}
+		return $path;
+	}
+
+	protected function pathMatches($path, $prefix) {
+		$prefix = $this->normalizeRequestPath($prefix);
+		if ($path === null || $prefix === null) return false;
+		$prefix = rtrim($prefix, '/');
+		// Selecting the homepage must not exempt the entire site.
+		if ($prefix === '') return false;
+		return $path === $prefix || strpos($path, $prefix . '/') === 0;
+	}
+
+	protected function getRedirectPath($url) {
+		$path = $this->normalizeRequestPath($url);
+		if ($path === null) return '/';
+		return implode('/', array_map('rawurlencode', explode('/', $path)));
+	}
+
+	/** Signed double-submit token also works when guest sessions are disabled. */
+	protected function getFormToken() {
+		$name = $this->getAccessCookieName() . '_csrf';
+		$token = $_COOKIE[$name] ?? '';
+		$data = $this->decodeSignedCookie($token);
+		if (!$data || ($data['purpose'] ?? '') !== 'csrf' || (int) ($data['expires'] ?? 0) <= time()) {
+			$expires = time() + 3600;
+			$token = $this->encodeSignedCookie([
+				'purpose' => 'csrf', 'nonce' => bin2hex(random_bytes(32)), 'expires' => $expires,
+			]);
+			$this->setCookie($name, $token, $expires);
+			$_COOKIE[$name] = $token;
+		}
+		return $token;
+	}
+
+	protected function hasValidFormToken() {
+		$cookie = $_COOKIE[$this->getAccessCookieName() . '_csrf'] ?? '';
+		$posted = $this->wire('input')->post('invite_access_csrf');
+		if (!is_string($cookie) || !is_string($posted) || $cookie === '' || !hash_equals($cookie, $posted)) return false;
+		$data = $this->decodeSignedCookie($cookie);
+		return $data && ($data['purpose'] ?? '') === 'csrf'
+			&& is_string($data['nonce'] ?? null) && strlen($data['nonce']) === 64
+			&& (int) ($data['expires'] ?? 0) > time();
 	}
 
 	/*
@@ -370,29 +442,45 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 			'url'        => $requestUrl ?: (string) ($_SERVER['REQUEST_URI'] ?? ''),
 		];
 
-		$entries = [];
-		if (is_file($logPath)) {
-			$raw = file_get_contents($logPath);
-			if ($raw) $entries = json_decode($raw, true) ?: [];
-		}
-
-		array_unshift($entries, $entry);
-		if (count($entries) > 1000) $entries = array_slice($entries, 0, 1000);
-
 		$dir = dirname($logPath);
 		if (!is_dir($dir)) wireMkdir($dir);
 
-		file_put_contents($logPath, json_encode($entries, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+		// Lock a stable sidecar: the data file itself is atomically replaced below.
+		$lock = @fopen($logPath . '.lock', 'c');
+		if (!$lock) return;
+		$tmp = null;
+		try {
+			if (!flock($lock, LOCK_EX)) return;
+			$entries = [];
+			if (is_file($logPath)) {
+				$raw = file_get_contents($logPath);
+				$entries = $raw === '' ? [] : json_decode($raw, true);
+				if (!is_array($entries) || array_values($entries) !== $entries) {
+					error_log('InviteAccess: invalid access log; preserved without overwriting.');
+					return;
+				}
+			}
+			array_unshift($entries, $entry);
+			$entries = array_slice($entries, 0, 1000);
+			$json = json_encode($entries, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+			if ($json === false) return;
+			$tmp = tempnam($dir, '.invite-access-');
+			if ($tmp === false) return;
+			chmod($tmp, 0600);
+			if (file_put_contents($tmp, $json) !== strlen($json) || !rename($tmp, $logPath)) {
+				error_log('InviteAccess: could not commit access log.');
+			}
+		} finally {
+			if ($tmp && is_file($tmp)) unlink($tmp);
+			flock($lock, LOCK_UN);
+			fclose($lock);
+		}
 	}
 
 	protected function getClientIP() {
-		foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'] as $key) {
-			if (!empty($_SERVER[$key])) {
-				$ip = trim(explode(',', $_SERVER[$key])[0]);
-				if (filter_var($ip, FILTER_VALIDATE_IP)) return $ip;
-			}
-		}
-		return '0.0.0.0';
+		// Forwarded headers are untrusted without a deployment-specific proxy allowlist.
+		$ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+		return filter_var($ip, FILTER_VALIDATE_IP) ? $ip : '0.0.0.0';
 	}
 
 	/*
@@ -425,8 +513,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 			? "<div class='ia-error'><i class='bi bi-exclamation-circle'></i> {$error}</div>"
 			: '';
 
-		$tokenName  = $this->wire('session')->CSRF->getTokenName();
-		$tokenValue = $this->wire('session')->CSRF->getTokenValue();
+		$tokenName = 'invite_access_csrf';
+		$tokenValue = htmlspecialchars($this->getFormToken(), ENT_QUOTES, 'UTF-8');
 
 		return <<<HTML
 <!DOCTYPE html>
@@ -742,7 +830,7 @@ HTML;
 		$f = $modules->get('InputfieldPageListSelectMultiple');
 		$f->name        = 'allowedPages';
 		$f->label       = 'Always Accessible Pages';
-		$f->description = 'These pages bypass the invite check (e.g. a public landing page or API endpoint).';
+		$f->description = 'These pages and descendants bypass the invite check. Stored page IDs are local to this database: reselect and verify them after importing configuration into another site.';
 		$f->attr('value', $data['allowedPages']);
 		$f->set('unselectLabel', 'Unselect');
 		if (empty($data['allowedPages'])) $f->collapsed = Inputfield::collapsedYes;
@@ -771,12 +859,14 @@ HTML;
 		// Log viewer
 		$logPath   = $data['logPath'] ?: wire('config')->paths->assets . 'logs/invite-access.json';
 		$logExists = is_file($logPath);
+		$logPathHtml = htmlspecialchars($logPath, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
 		$f = $modules->get('InputfieldMarkup');
 		$f->label = 'Recent Access Log';
 
 		if ($logExists) {
-			$entries = json_decode(file_get_contents($logPath), true) ?: [];
+			$entries = json_decode(file_get_contents($logPath), true);
+			if (!is_array($entries)) $entries = [];
 			$rows = '';
 			foreach (array_slice($entries, 0, 50) as $e) {
 				$status = $e['success']
@@ -794,7 +884,7 @@ HTML;
 			}
 			$count = count($entries);
 			$f->value = "
-				<p style='margin-bottom:10px;color:#888;font-size:13px'>Showing last 50 of {$count} entries. Log: <code>{$logPath}</code></p>
+				<p style='margin-bottom:10px;color:#888;font-size:13px'>Showing last 50 of {$count} entries. Log: <code>{$logPathHtml}</code></p>
 				<div style='overflow-x:auto'>
 				<table style='width:100%;border-collapse:collapse;font-size:13px'>
 					<thead>
@@ -812,7 +902,7 @@ HTML;
 				</table>
 				</div>";
 		} else {
-			$f->value = "<p style='color:#888'>No log entries yet. Log file will be created at: <code>{$logPath}</code></p>";
+			$f->value = "<p style='color:#888'>No log entries yet. Log file will be created at: <code>{$logPathHtml}</code></p>";
 		}
 		$fields->add($f);
 

@@ -4,6 +4,36 @@ All notable changes to InviteAccess are documented here.
 
 ---
 
+## [1.0.3] — 2026-09-10
+
+### Fixed
+- CLI bootstraps bypass the HTTP gate (fixes #3).
+- Redirect targets are restricted to unambiguous local paths and query strings are removed.
+- Admin and allowed-page exceptions match complete path segments; ambiguous traversal, encoded traversal, backslashes and repeated slashes do not qualify for exceptions.
+- Invite submissions require a signed, expiring double-submit CSRF token. This replaces the previously unvalidated ProcessWire token and works with guest sessions disabled.
+- Both admin log-path displays escape HTML.
+- Log updates use a stable exclusive lock and atomic replacement; corrupt history is preserved rather than silently overwritten. Invalid UTF-8 input does not corrupt JSON.
+- Access logs use `REMOTE_ADDR`, ignoring untrusted forwarded headers.
+- Cookies cannot be signed or verified without `userAuthSalt`; predictable signing-key fallbacks are removed.
+- Gate and redirect responses use `Cache-Control: no-store, private`.
+- Numeric invite codes no longer cause a type error during comparison.
+
+### Changed
+- New installations start with no example invite codes. Existing configured codes are preserved.
+- Cookie paths follow the ProcessWire installation root; Secure also respects ProcessWire's HTTPS configuration.
+- Session duration is clamped to at least one hour.
+- Allowed-page configuration warns that IDs must be reselected and verified when transferred between independent databases.
+
+### Upgrade notes
+- Reload any invite form opened before updating: the previous form token is no longer accepted.
+- Configure a valid ProcessWire `userAuthSalt`. Guest-session-free access still works; no guest PHP session is required.
+- Behind a reverse proxy, the log now records the connection address unless the web server securely resolves `REMOTE_ADDR` using a trusted-proxy configuration.
+- Keep logs outside the public document root or deny HTTP access to their directory. Existing log entries and configured paths are not migrated or deleted.
+- Allowed pages still include descendants, and the homepage does not exempt the whole site. Verify these exceptions after a configuration import; raw page IDs are not portable.
+- Run `php tests/regression.php` and `python3 tests/http_regression.py` from the development repository. Do not deploy tests into a public document root.
+
+---
+
 ## [1.0.2] — 2026-06-07
 
 ### Fixed
