@@ -69,6 +69,22 @@ $m->checkAccess(new HookEvent);
 check(true, 'CLI bootstrap returns without gate output');
 
 $m = testModule();
+$m->api['config']->inviteAccess = ['enabled' => 0, 'pageTitle' => 'Staging', 'bogus' => 1];
+$m->call('applyConfigOverrides');
+check($m->enabled === 0 && $m->pageTitle === 'Staging' && $m->bogus === null, 'Config-file overrides apply to known settings only');
+$m = testModule();
+$m->api['config']->inviteAccess = 'enabled';
+$m->call('applyConfigOverrides');
+check($m->enabled === 1 && $m->pageTitle === 'Access Required', 'A non-array override is ignored');
+$m = testModule();
+$m->call('applyConfigOverrides');
+check($m->enabled === 1, 'No override, no change');
+$m->api['config']->inviteAccess = ['enabled' => 0, 'inviteCodes' => 'secret-in-file'];
+$fields = InviteAccess::getModuleConfigInputfields(InviteAccess::getDefaultData());
+$first = reset($fields->children);
+check(strpos($first->value, 'enabled') !== false && strpos($first->value, 'inviteCodes') !== false && strpos($first->value, 'secret-in-file') === false, 'Config screen names overridden keys without their values');
+
+$m = testModule();
 $data = InviteAccess::getDefaultData();
 $data['logPath'] = sys_get_temp_dir() . '/<img src=x onerror=alert(1)>.json';
 $fields = InviteAccess::getModuleConfigInputfields($data);

@@ -4,6 +4,13 @@ All notable changes to InviteAccess are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- Per-environment overrides: `$config->inviteAccess`, an array of module settings in a config file, overrides the saved configuration when the gate runs, so a development copy of a production database can keep the gate off. Overridden keys are named on the configuration screen without their values.
+
+---
+
 ## [1.0.3] — 2026-09-10
 
 ### Fixed
