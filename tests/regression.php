@@ -34,6 +34,30 @@ check($m->call('pathMatches', '/press/item/', '/press/'), 'Allowed descendant');
 check(!$m->call('pathMatches', '/private', '/'), 'Homepage must not exempt site');
 check($m->call('getRedirectPath', '/caf%C3%A9/?secret=x') === '/caf%C3%A9/', 'Preserve encoding, remove query');
 
+check($m->call('parseAllowedPaths') === ['/hooks/stripe/', '/hooks/beds24'], 'Allowed paths parsed, comment kept out');
+$m->allowedPaths = "/hooks/stripe/\n/\n//evil.test/\n/hooks/../private\n/%2fevil.test/\n/hooks/%5c../x";
+check($m->call('parseAllowedPaths') === ['/hooks/stripe/'], 'Ambiguous allowed-path lines and the root are ignored');
+foreach (['/hooks/stripe/', '/hooks/stripe', '/hooks/stripe/event/'] as $url) {
+	check($m->call('matchAllowedPath', $m->call('normalizeRequestPath', $url)) === '/hooks/stripe/', 'Allowed path: ' . $url);
+}
+foreach (['/hooks/', '/hooks/stripe-old/', '/hooks/beds24/', '/private/', '/hooks/../hooks/stripe/', '/hooks/%2e%2e/private/', '//hooks/stripe/'] as $url) {
+	check($m->call('matchAllowedPath', $m->call('normalizeRequestPath', $url)) === null, 'Stays gated: ' . $url);
+}
+$m->api['config']->urls->root = '/sub/';
+$m->allowedPaths = "/hooks/stripe/\n/";
+check($m->call('parseAllowedPaths') === ['/sub/hooks/stripe/'], 'Allowed paths resolve against the installation root, which is never exempt');
+check($m->call('matchAllowedPath', '/sub/hooks/stripe/event/') === '/sub/hooks/stripe/' && $m->call('matchAllowedPath', '/hooks/stripe/') === null, 'Root-relative match');
+$m->api['config']->urls->root = '/';
+$data = InviteAccess::getDefaultData();
+$data['allowedPaths'] = "/hooks/stripe/\n//evil.test/";
+$seen = false;
+foreach (InviteAccess::getModuleConfigInputfields($data)->children as $field) {
+	if ($field->name !== 'allowedPaths') continue;
+	$seen = true;
+	check(strpos((string) $field->notes, '//evil.test/') !== false && strpos((string) $field->notes, '/hooks/stripe/') === false, 'Config screen names the ignored allowed-path lines only');
+}
+check($seen, 'Allowed paths field rendered');
+
 $_COOKIE = []; $_POST = [];
 check(!$m->call('hasValidFormToken'), 'Missing CSRF denied');
 $token = $m->call('getFormToken');
@@ -63,6 +87,13 @@ $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
 $_SERVER['HTTP_X_FORWARDED_FOR'] = '1.2.3.4';
 $_SERVER['HTTP_CF_CONNECTING_IP'] = '5.6.7.8';
 check($m->call('getClientIP') === '127.0.0.1', 'Ignore forged proxy headers');
+$m = testModule();
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$m->call('logAllowedPath', '/hooks/stripe/', '/hooks/stripe/event/');
+check($m->api['log']->entries === [], 'Allowed-path logging is opt-in');
+$m->logAllowedPaths = 1;
+$m->call('logAllowedPath', '/hooks/stripe/', '/hooks/stripe/event/');
+check($m->api['log']->entries === [['invite-access', 'allowed path: POST /hooks/stripe/event/ matched /hooks/stripe/ from 127.0.0.1']], 'Bypass goes to the ProcessWire log, not the JSON access log');
 $m = testModule();
 $m->api = []; // CLI must return before reading any ProcessWire service.
 $m->checkAccess(new HookEvent);

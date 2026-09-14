@@ -69,7 +69,12 @@ for sessions in (False, True):
                 check(len(token) > 64, 'Signed CSRF rendered')
                 for path in ('/processwire/', '/processwire/edit/', '/press/', '/press/item/'):
                     check(request(path)[2] == 'GATED CONTENT', 'Intended exemption: ' + path)
-                for path in ('/processwire-other/', '/press-release/', '/processwire/../private/',
+                for path in ('/hooks/stripe/', '/hooks/stripe/event/', '/hooks/beds24/'):
+                    check(request(path)[2] == 'GATED CONTENT', 'Intended path exemption: ' + path)
+                check(request('/hooks/stripe/', {'payload': 'x'})[2] == 'GATED CONTENT',
+                      'Webhook POST reaches the allowed path without an invite')
+                for path in ('/processwire-other/', '/press-release/', '/hooks/', '/hooks/stripe-old/',
+                             '/hooks/../private/', '/processwire/../private/',
                              '/processwire/%2e%2e/private/', '/processwire/%252e%252e/private/',
                              '/processwire//private/'):
                     check('Access Required' in request(path)[2], 'Bypass denied: ' + path)

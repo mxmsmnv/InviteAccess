@@ -29,6 +29,10 @@ class TestUser { public function isLoggedIn() { return false; } }
 class TestPages {
 	public function get($id) { return (object) ['id' => $id, 'url' => '/press/']; }
 }
+class TestLog {
+	public $entries = [];
+	public function save($name, $text) { $this->entries[] = [$name, $text]; return true; }
+}
 class Inputfield extends WireData {
 	const collapsedYes = 1;
 	public $children = [];
@@ -54,12 +58,13 @@ function testModule() {
 			'paths' => (object) ['assets' => sys_get_temp_dir() . '/'],
 		],
 		'session' => new TestSession, 'input' => new TestInput,
-		'user' => new TestUser, 'pages' => new TestPages, 'modules' => new TestModules,
+		'user' => new TestUser, 'pages' => new TestPages, 'modules' => new TestModules, 'log' => new TestLog,
 	];
 	$GLOBALS['testApi'] = $m->api;
 	$m->enabled = 1;
 	$m->inviteCodes = "test-secret|Test team\n123456|Numeric";
 	$m->allowedPages = [123];
+	$m->allowedPaths = "/hooks/stripe/\n# comment\nhooks/beds24";
 	$m->logEnabled = 0;
 	return $m;
 }
