@@ -12,6 +12,7 @@
  * - Access log (JSON) with date, IP, user agent, invite code used
  * - All logged-in ProcessWire users bypass the gate
  * - Configurable allowed pages (e.g. assets, API endpoints)
+ * - Configurable allowed paths (e.g. webhooks that verify their own secrets)
  * - Optional per-code labels (e.g. "agency-team|Agency Design Team")
  *
  * @author Maxim Semenov <maxim@smnv.org> (smnv.org)
@@ -55,6 +56,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 			'logEnabled'     => 1,
 			'logPath'        => '',
 			'allowedPages'   => [],
+			'allowedPaths'   => '',
+			'logAllowedPaths' => 0,
 		];
 	}
 
@@ -110,6 +113,13 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 					if ($this->pathMatches($requestPath, $pUrl)) return;
 				}
 			}
+		}
+
+		// Skip explicitly allowed paths (e.g. webhooks that verify their own secrets)
+		$allowedPath = $this->matchAllowedPath($requestPath);
+		if ($allowedPath !== null) {
+			$this->logAllowedPath($allowedPath, $requestPath);
+			return;
 		}
 
 		// Check existing valid session
@@ -418,6 +428,54 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		}
 
 		return $result;
+	}
+
+	/*
+	 * ─────────────────────────────────────────────
+	 * Parse Allowed Paths → ['/api/webhooks/stripe/', ...]
+	 *
+	 * Lines are site-relative, like $page->path, and are resolved against
+	 * the installation root. A line that normalizeRequestPath() rejects, or
+	 * that resolves to the root itself, is ignored rather than guessed at;
+	 * $ignored receives those lines so the config screen can name them.
+	 * ─────────────────────────────────────────────
+	 */
+	protected function parseAllowedPaths(&$ignored = [], $root = null) {
+		$result  = [];
+		$ignored = [];
+		$raw     = trim((string) $this->allowedPaths);
+		if (!$raw) return $result;
+
+		$root = rtrim((string) ($root ?? $this->wire('config')->urls->root), '/');
+		foreach (explode("\n", $raw) as $line) {
+			$line = trim($line);
+			if (!$line || strpos($line, '#') === 0) continue;
+
+			$path = $this->normalizeRequestPath($root . ($line[0] === '/' ? $line : '/' . $line));
+			// The installation root would exempt the entire site.
+			if ($path === null || rtrim($path, '/') === $root) {
+				$ignored[] = $line;
+				continue;
+			}
+			$result[] = $path;
+		}
+
+		return $result;
+	}
+
+	/** The configured prefix a request path falls under, or null when it falls under none. */
+	protected function matchAllowedPath($path) {
+		foreach ($this->parseAllowedPaths() as $prefix) {
+			if ($this->pathMatches($path, $prefix)) return $prefix;
+		}
+		return null;
+	}
+
+	/** Opt-in trail of gate bypasses, kept out of the capped JSON access log. */
+	protected function logAllowedPath($prefix, $path) {
+		if (!$this->logAllowedPaths) return;
+		$method = (string) ($_SERVER['REQUEST_METHOD'] ?? '');
+		$this->wire('log')->save('invite-access', "allowed path: {$method} {$path} matched {$prefix} from " . $this->getClientIP());
 	}
 
 	/*
@@ -836,6 +894,21 @@ HTML;
 		if (empty($data['allowedPages'])) $f->collapsed = Inputfield::collapsedYes;
 		$fields->add($f);
 
+		$f = $modules->get('InputfieldTextarea');
+		$f->name        = 'allowedPaths';
+		$f->label       = 'Always Accessible Paths';
+		$f->description = 'One path per line, relative to the ProcessWire root. The path and its descendants bypass the invite check. Meant for endpoints that verify their own secrets, such as payment or booking webhooks: without an exception the gate answers them with the invite form and HTTP 200, so the sender records a delivery that never ran. Lines starting with # are ignored.';
+		$f->notes       = "Example:\n/api/webhooks/stripe/\n/api/webhooks/beds24/";
+		$f->rows        = 4;
+		$f->attr('value', $data['allowedPaths']);
+		$module = new self; // not the live instance: defaults only, root passed in explicitly
+		$module->allowedPaths = $data['allowedPaths'];
+		$ignored = [];
+		$module->parseAllowedPaths($ignored, wire('config')->urls->root);
+		if ($ignored) $f->notes = 'Ignored, not usable as a path: ' . implode(', ', $ignored) . "\n\n" . $f->notes;
+		if (empty($data['allowedPaths'])) $f->collapsed = Inputfield::collapsedYes;
+		$fields->add($f);
+
 		$fieldset = $modules->get('InputfieldFieldset');
 		$fieldset->label = 'Access Log';
 
@@ -844,6 +917,14 @@ HTML;
 			$f->label = 'Enable access logging';
 			$f->value = 1;
 			$f->attr('checked', $data['logEnabled'] ? 'checked' : '');
+			$fieldset->add($f);
+
+			$f = $modules->get('InputfieldCheckbox');
+			$f->name  = 'logAllowedPaths';
+			$f->label = 'Log requests that bypass the gate through an allowed path';
+			$f->description = 'One line per request in the ProcessWire log "invite-access" (Setup › Logs): method, path, the matching prefix and REMOTE_ADDR. Kept out of the JSON access log so webhook traffic cannot push invite attempts out of the capped file.';
+			$f->value = 1;
+			$f->attr('checked', $data['logAllowedPaths'] ? 'checked' : '');
 			$fieldset->add($f);
 
 			$f = $modules->get('InputfieldText');

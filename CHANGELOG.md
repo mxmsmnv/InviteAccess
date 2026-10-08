@@ -4,6 +4,14 @@ All notable changes to InviteAccess are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- Allowed paths: a configurable list of site-relative path prefixes that bypass the gate, for webhooks and other endpoints that verify their own secrets. Without an exception the gate answers such requests with the invite form and HTTP 200, so the sender records a delivery that never ran. Matching reuses the complete path-segment rules of allowed pages; ambiguous lines and the installation root are ignored and named on the config screen.
+- Optional logging of allowed-path bypasses to the ProcessWire log `invite-access`, off by default and kept out of the capped JSON access log.
+
+---
+
 ## [1.0.3] — 2026-09-10
 
 ### Fixed

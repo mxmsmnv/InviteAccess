@@ -20,6 +20,7 @@ If this project helps your work, consider supporting future development: [GitHub
 - Light / Dark / Auto theme on the access page — preference saved in localStorage
 - Logged-in ProcessWire users and CLI bootstraps always bypass the gate
 - Allowed pages — selected pages and descendants bypass the gate, with complete path-segment matching
+- Allowed paths — configured path prefixes bypass the gate, for webhooks and other endpoints that verify their own secrets
 - Clean, minimal UI — ApfelGrotezk font, processwire.com-inspired design, Bootstrap Icons
 - Accent color presets — red, blue, green or black, configurable per-install
 
@@ -48,7 +49,9 @@ If this project helps your work, consider supporting future development: [GitHub
 | Style | Accent color for button and input focus border: `red`, `blue`, `green`, `black` | `red` |
 | Session Duration | Hours before the visitor must re-enter their code | `1` |
 | Always Accessible Pages | Pages that bypass the invite check entirely | — |
+| Always Accessible Paths | One path per line, relative to the ProcessWire root; the path and its descendants bypass the invite check | — |
 | Enable access logging | Write all access attempts to a JSON file | on |
+| Log allowed-path requests | Record each request that bypasses the gate through an allowed path in the ProcessWire log `invite-access` | off |
 | Log file path | Custom path for the log file (optional) | `site/assets/logs/invite-access.json` |
 
 ---
@@ -66,6 +69,22 @@ PLAINCODE
 ```
 
 Labels make it easy to identify which team or campaign each access attempt belongs to when reading the log.
+
+---
+
+## Allowed Paths
+
+Endpoints that authenticate on their own — payment or booking webhooks, for example — must not see the invite form: the gate answers them with the form and HTTP 200, so the sender records a successful delivery that never ran. List such paths one per line in **Always Accessible Paths**, relative to the ProcessWire root:
+
+```
+/api/webhooks/stripe/
+/api/webhooks/beds24/
+# this line is a comment and will be ignored
+```
+
+A listed path and its descendants bypass the gate. Matching is by complete path segment, so `/api/webhooks/stripe/` covers `/api/webhooks/stripe/event/` but not `/api/webhooks/stripe-old/`. Lines that are not unambiguous local paths, and the installation root itself, are ignored and named on the config screen. Keep each prefix as specific as its endpoint: `/api/` would exempt everything beneath it.
+
+Enable **Log allowed-path requests** to record each bypass in the ProcessWire log `invite-access` (Setup › Logs) with method, path, the matching prefix and `REMOTE_ADDR`. It stays out of the JSON access log so webhook traffic cannot push invite attempts out of the capped file.
 
 ---
 
@@ -94,7 +113,7 @@ The log directory must deny HTTP access (including on Nginx, where `.htaccess` d
 
 ## How It Works
 
-The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. CLI requests return immediately. Admin and allowed-page exceptions require a complete path-segment match; ambiguous paths do not qualify for an exception.
+The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. CLI requests return immediately. Admin, allowed-page and allowed-path exceptions require a complete path-segment match; ambiguous paths do not qualify for an exception.
 
 On a valid code submission, the module stores the code and an expiry timestamp in the ProcessWire session and in a signed HTTP-only fallback cookie. The fallback keeps access working on sites that disable guest sessions with `$config->sessionAllow`. Subsequent requests validate that stored code without touching the database. If a code is removed from the config, any active session or fallback cookie using that code is immediately invalidated.
 
@@ -109,6 +128,7 @@ On a valid code submission, the module stores the code and an expiry timestamp i
 - Use private, unpredictable codes; example codes shown in this document are public. New installations have no pre-filled codes; upgrades preserve configured codes.
 - Gate and redirect responses are not cacheable. Keep reverse proxies and full-page caches from serving protected content before PHP runs.
 - Allowed pages are stored as local database IDs. Reselect and verify them after importing configuration into a different database. The homepage does not exempt the entire site.
+- Allowed paths are prefixes: everything beneath one is exempt, and nothing checks them against the page tree. Keep them as specific as the endpoint, and make sure every exempted endpoint authenticates on its own (signed webhooks, tokens). The installation root is never accepted.
 - Direct static files are not intercepted by the PHP hook. Protect private files at the web-server boundary.
 - The gate still loads fonts and icons from jsDelivr; this contacts a third party before authentication.
 - The module is intended for staging environments, not as a substitute for HTTP authentication on sensitive production data. It does not provide rate limiting; enforce that at the server boundary when needed.
@@ -125,7 +145,7 @@ php tests/regression.php
 python3 tests/http_regression.py
 ```
 
-The regression tests use isolated ProcessWire API doubles and a temporary local PHP HTTP server. They cover CLI, URL exceptions, same-origin redirects, CSRF, cookies, log escaping, concurrent writes and guest-session modes. They do not replace verification on a disposable copy of the consuming ProcessWire site. Do not deploy `tests/` or development documentation into a public site directory.
+The regression tests use isolated ProcessWire API doubles and a temporary local PHP HTTP server. They cover CLI, URL and allowed-path exceptions, same-origin redirects, CSRF, cookies, log escaping, concurrent writes and guest-session modes. They do not replace verification on a disposable copy of the consuming ProcessWire site. Do not deploy `tests/` or development documentation into a public site directory.
 
 ## Author
 
