@@ -22,7 +22,7 @@ def check(condition, message):
     checks += 1
 
 
-for sessions in (False, True):
+for sessions, override in ((False, False), (True, False), (False, True)):
     with tempfile.TemporaryDirectory(prefix='invite-http-') as tmp:
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -31,7 +31,8 @@ for sessions in (False, True):
             server = subprocess.Popen(
                 [shutil.which('php'), '-d', f'session.save_path={tmp}', '-S',
                  f'127.0.0.1:{port}', str(ROOT / 'router.php')],
-                env={**os.environ, 'INVITE_TEST_SESSION': str(int(sessions))},
+                env={**os.environ, 'INVITE_TEST_SESSION': str(int(sessions)),
+                     'INVITE_TEST_OVERRIDE': str(int(override))},
                 stdout=log, stderr=log,
             )
             jar = {}
@@ -63,38 +64,43 @@ for sessions in (False, True):
                             raise RuntimeError('PHP server exited')
                         time.sleep(.05)
                 status, headers, body = request('/private/')
-                check('Access Required' in body, 'Anonymous request gated')
-                check(headers.get('Cache-Control') == 'no-store, private', 'Gate not cacheable')
-                token = re.search(r'name="invite_access_csrf" value="([^"]+)"', body)[1]
-                check(len(token) > 64, 'Signed CSRF rendered')
-                for path in ('/processwire/', '/processwire/edit/', '/press/', '/press/item/'):
-                    check(request(path)[2] == 'GATED CONTENT', 'Intended exemption: ' + path)
-                for path in ('/hooks/stripe/', '/hooks/stripe/event/', '/hooks/beds24/'):
-                    check(request(path)[2] == 'GATED CONTENT', 'Intended path exemption: ' + path)
-                check(request('/hooks/stripe/', {'payload': 'x'})[2] == 'GATED CONTENT',
-                      'Webhook POST reaches the allowed path without an invite')
-                for path in ('/processwire-other/', '/press-release/', '/hooks/', '/hooks/stripe-old/',
-                             '/hooks/../private/', '/processwire/../private/',
-                             '/processwire/%2e%2e/private/', '/processwire/%252e%252e/private/',
-                             '/processwire//private/'):
-                    check('Access Required' in request(path)[2], 'Bypass denied: ' + path)
-                check('Access Required' in request('/private/', {'invite_code': 'test-secret'})[2],
-                      'Known invite cannot bypass missing CSRF')
-                check('Access Required' in request('/private/', {'invite_code': 'test-secret',
-                      'invite_access_csrf': 'forged'})[2], 'Forged CSRF denied')
-                for path in ('//evil.test/', '/%2fevil.test/', '/%5cevil.test/', '/private/?x=1'):
-                    status, headers, body = request(path, {'invite_code': 'wrong', 'invite_access_csrf': token})
-                    check(status == 303, 'Invalid code PRG')
-                    check(headers['Location'] == ('/private/' if path.startswith('/private/') else '/'),
-                          'Redirect remains same-origin')
-                status, headers, body = request('/private/?secret=1', {
-                    'invite_code': '123456' if sessions else 'test-secret', 'invite_access_csrf': token})
-                check(status == 303 and headers['Location'] == '/private/', 'Valid code PRG')
-                check(request('/private/')[2] == 'GATED CONTENT', 'Access persists on subsequent request')
-                if not sessions:
-                    check('PHPSESSID' not in jar, 'Sessionless flow did not create PHP session')
-                    jar['invite_access'] += 'tampered'
-                    check('Access Required' in request('/private/')[2], 'Forged access cookie denied')
+                if override:
+                    check(body == 'GATED CONTENT', 'Config-file override keeps the gate off')
+                    check(request('/private/', {'invite_code': 'wrong'})[2] == 'GATED CONTENT',
+                          'No form handling while the gate is overridden off')
+                else:
+                    check('Access Required' in body, 'Anonymous request gated')
+                    check(headers.get('Cache-Control') == 'no-store, private', 'Gate not cacheable')
+                    token = re.search(r'name="invite_access_csrf" value="([^"]+)"', body)[1]
+                    check(len(token) > 64, 'Signed CSRF rendered')
+                    for path in ('/processwire/', '/processwire/edit/', '/press/', '/press/item/'):
+                        check(request(path)[2] == 'GATED CONTENT', 'Intended exemption: ' + path)
+                    for path in ('/hooks/stripe/', '/hooks/stripe/event/', '/hooks/beds24/'):
+                        check(request(path)[2] == 'GATED CONTENT', 'Intended path exemption: ' + path)
+                    check(request('/hooks/stripe/', {'payload': 'x'})[2] == 'GATED CONTENT',
+                          'Webhook POST reaches the allowed path without an invite')
+                    for path in ('/processwire-other/', '/press-release/', '/hooks/', '/hooks/stripe-old/',
+                                 '/hooks/../private/', '/processwire/../private/',
+                                 '/processwire/%2e%2e/private/', '/processwire/%252e%252e/private/',
+                                 '/processwire//private/'):
+                        check('Access Required' in request(path)[2], 'Bypass denied: ' + path)
+                    check('Access Required' in request('/private/', {'invite_code': 'test-secret'})[2],
+                          'Known invite cannot bypass missing CSRF')
+                    check('Access Required' in request('/private/', {'invite_code': 'test-secret',
+                          'invite_access_csrf': 'forged'})[2], 'Forged CSRF denied')
+                    for path in ('//evil.test/', '/%2fevil.test/', '/%5cevil.test/', '/private/?x=1'):
+                        status, headers, body = request(path, {'invite_code': 'wrong', 'invite_access_csrf': token})
+                        check(status == 303, 'Invalid code PRG')
+                        check(headers['Location'] == ('/private/' if path.startswith('/private/') else '/'),
+                              'Redirect remains same-origin')
+                    status, headers, body = request('/private/?secret=1', {
+                        'invite_code': '123456' if sessions else 'test-secret', 'invite_access_csrf': token})
+                    check(status == 303 and headers['Location'] == '/private/', 'Valid code PRG')
+                    check(request('/private/')[2] == 'GATED CONTENT', 'Access persists on subsequent request')
+                    if not sessions:
+                        check('PHPSESSID' not in jar, 'Sessionless flow did not create PHP session')
+                        jar['invite_access'] += 'tampered'
+                        check('Access Required' in request('/private/')[2], 'Forged access cookie denied')
             finally:
                 server.terminate()
                 try:
@@ -106,4 +112,4 @@ for sessions in (False, True):
             output = log.read()
             check(not re.search(r'(Warning|Fatal error|Deprecated):', output), output)
 
-print(f'PASS: {checks} HTTP checks (guest sessions enabled and disabled)')
+print(f'PASS: {checks} HTTP checks (guest sessions enabled and disabled, config-file override)')

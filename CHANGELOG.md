@@ -4,11 +4,12 @@ All notable changes to InviteAccess are documented here.
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-10-08
 
 ### Added
 - Allowed paths: a configurable list of site-relative path prefixes that bypass the gate, for webhooks and other endpoints that verify their own secrets. Without an exception the gate answers such requests with the invite form and HTTP 200, so the sender records a delivery that never ran. Matching reuses the complete path-segment rules of allowed pages; ambiguous lines and the installation root are ignored and named on the config screen.
 - Optional logging of allowed-path bypasses to the ProcessWire log `invite-access`, off by default and kept out of the capped JSON access log.
+- Per-environment overrides: `$config->inviteAccess`, an array of module settings in a config file, overrides the saved configuration when the gate runs, so a development copy of a production database can keep the gate off. Overridden keys are named on the configuration screen without their values.
 
 ---
 

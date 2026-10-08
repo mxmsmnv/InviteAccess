@@ -13,6 +13,7 @@
  * - All logged-in ProcessWire users bypass the gate
  * - Configurable allowed pages (e.g. assets, API endpoints)
  * - Configurable allowed paths (e.g. webhooks that verify their own secrets)
+ * - Per-environment overrides via $config->inviteAccess (e.g. gate off on a development copy)
  * - Optional per-code labels (e.g. "agency-team|Agency Design Team")
  *
  * @author Maxim Semenov <maxim@smnv.org> (smnv.org)
@@ -30,7 +31,7 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		return [
 			'title'     => 'Invite Access',
 			'summary'   => 'Restricts site access to visitors with a valid invite code. Designed for staging environments with multiple teams.',
-			'version'   => 103,
+			'version'   => 110,
 			'autoload'  => true,
 			'singular'  => true,
 			'permanent' => false,
@@ -87,6 +88,8 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 	public function checkAccess(HookEvent $event) {
 		// Command-line bootstraps are not HTTP requests.
 		if (PHP_SAPI === 'cli' || $this->wire('config')->cli) return;
+		// A config file may pin settings for this environment (see applyConfigOverrides).
+		$this->applyConfigOverrides();
 		if (!$this->enabled) return;
 
 		$user = $this->wire('user');
@@ -401,6 +404,34 @@ class InviteAccess extends WireData implements Module, ConfigurableModule {
 		return $data && ($data['purpose'] ?? '') === 'csrf'
 			&& is_string($data['nonce'] ?? null) && strlen($data['nonce']) === 64
 			&& (int) ($data['expires'] ?? 0) > time();
+	}
+
+	/*
+	 * ─────────────────────────────────────────────
+	 * Config-File Overrides → per-environment settings
+	 *
+	 * Module settings live in the database, so a database copied between
+	 * environments carries the gate's state with it. A config file does not
+	 * travel that way, so settings pinned there hold per environment:
+	 *
+	 *   $config->inviteAccess = ['enabled' => false];   // site/config-dev.php
+	 *
+	 * Any key from getDefaultData() may be set; other keys are ignored. The
+	 * overrides are applied to the instance the hook runs on, at check time,
+	 * and are never written back. Same idea as TracyDebugger's $config->tracy.
+	 * ─────────────────────────────────────────────
+	 */
+	protected function applyConfigOverrides() {
+		foreach (self::configOverrides($this->wire('config')) as $key => $value) {
+			$this->$key = $value;
+		}
+	}
+
+	/** The entries of $config->inviteAccess that name a module setting. */
+	protected static function configOverrides($config) {
+		$overrides = $config->inviteAccess ?? null;
+		if (!is_array($overrides)) return [];
+		return array_intersect_key($overrides, self::getDefaultData());
 	}
 
 	/*
@@ -818,6 +849,16 @@ HTML;
 		$data    = array_merge(self::getDefaultData(), $data);
 		$modules = wire('modules');
 		$fields  = new InputfieldWrapper();
+
+		$overridden = array_keys(self::configOverrides(wire('config')));
+		if ($overridden) {
+			$f = $modules->get('InputfieldMarkup');
+			$f->label = 'Overridden by $config->inviteAccess';
+			$f->value = '<p>Set in a config file for this environment and used instead of the saved values: <code>'
+				. implode('</code>, <code>', array_map('htmlspecialchars', $overridden))
+				. '</code>. Edits below are saved but not applied here while the override is in place.</p>';
+			$fields->add($f);
+		}
 
 		$f = $modules->get('InputfieldCheckbox');
 		$f->name  = 'enabled';

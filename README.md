@@ -21,6 +21,7 @@ If this project helps your work, consider supporting future development: [GitHub
 - Logged-in ProcessWire users and CLI bootstraps always bypass the gate
 - Allowed pages — selected pages and descendants bypass the gate, with complete path-segment matching
 - Allowed paths — configured path prefixes bypass the gate, for webhooks and other endpoints that verify their own secrets
+- Per-environment overrides — `$config->inviteAccess` in a config file overrides any saved setting, so a development copy of the production database can keep the gate off
 - Clean, minimal UI — ApfelGrotezk font, processwire.com-inspired design, Bootstrap Icons
 - Accent color presets — red, blue, green or black, configurable per-install
 
@@ -53,6 +54,20 @@ If this project helps your work, consider supporting future development: [GitHub
 | Enable access logging | Write all access attempts to a JSON file | on |
 | Log allowed-path requests | Record each request that bypasses the gate through an allowed path in the ProcessWire log `invite-access` | off |
 | Log file path | Custom path for the log file (optional) | `site/assets/logs/invite-access.json` |
+
+---
+
+## Per-Environment Overrides
+
+Module settings live in the database, so a production database copied to a development machine brings the production gate with it. To pin a setting per environment, set it in a config file that is not shared between environments, such as `site/config-dev.php`:
+
+```php
+$config->inviteAccess = [
+    'enabled' => false,   // keep the gate off on this machine, whatever the database says
+];
+```
+
+Any setting of the module can be listed by its name (`enabled`, `inviteCodes`, `sessionHours`, `allowedPages`, `logEnabled`, `logPath`, …); unknown keys are ignored. Overrides are applied when the gate runs and are never written to the database. The module configuration screen names the keys that are overridden in the current environment, without showing their values. This is the same approach as TracyDebugger's `$config->tracy`.
 
 ---
 
@@ -113,7 +128,7 @@ The log directory must deny HTTP access (including on Nginx, where `.htaccess` d
 
 ## How It Works
 
-The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. CLI requests return immediately. Admin, allowed-page and allowed-path exceptions require a complete path-segment match; ambiguous paths do not qualify for an exception.
+The module hooks into `ProcessPageView::execute` — the earliest point in ProcessWire's request lifecycle — before any template or page rendering occurs. CLI requests return immediately. Settings pinned in `$config->inviteAccess` are applied before the gate decides. Admin, allowed-page and allowed-path exceptions require a complete path-segment match; ambiguous paths do not qualify for an exception.
 
 On a valid code submission, the module stores the code and an expiry timestamp in the ProcessWire session and in a signed HTTP-only fallback cookie. The fallback keeps access working on sites that disable guest sessions with `$config->sessionAllow`. Subsequent requests validate that stored code without touching the database. If a code is removed from the config, any active session or fallback cookie using that code is immediately invalidated.
 
@@ -145,7 +160,7 @@ php tests/regression.php
 python3 tests/http_regression.py
 ```
 
-The regression tests use isolated ProcessWire API doubles and a temporary local PHP HTTP server. They cover CLI, URL and allowed-path exceptions, same-origin redirects, CSRF, cookies, log escaping, concurrent writes and guest-session modes. They do not replace verification on a disposable copy of the consuming ProcessWire site. Do not deploy `tests/` or development documentation into a public site directory.
+The regression tests use isolated ProcessWire API doubles and a temporary local PHP HTTP server. They cover CLI, URL and allowed-path exceptions, config-file overrides, same-origin redirects, CSRF, cookies, log escaping, concurrent writes and guest-session modes. They do not replace verification on a disposable copy of the consuming ProcessWire site. Do not deploy `tests/` or development documentation into a public site directory.
 
 ## Author
 
